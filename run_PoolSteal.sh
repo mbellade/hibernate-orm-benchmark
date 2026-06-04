@@ -1,17 +1,67 @@
 #!/bin/bash
 
+# Pool Steal Benchmark: Blocking ORM (Agroal) vs Hibernate Reactive (Vert.x pool)
+#
+# This script runs the default Phase 1 (throughput) and optional Phase 2 (latency)
+# benchmarks. For ad-hoc runs with custom parameters, build the JMH jar once and
+# invoke java -jar directly.
+#
+# Build the JMH jar:
+#   ./gradlew :hibernate-orm-benchmark-reactive:jmhJar -Porm=perf
+#
+# JMH jar location:
+#   reactive/target/libs/hibernate-orm-benchmark-reactive-1.0-SNAPSHOT-jmh.jar
+#
+# === Ad-hoc examples ===
+#
+# Blocking throughput (2 threads, 2 connections):
+#   java -jar $JAR BlockingPoolStealBenchmark.throughput \
+#     -t 2 -f 1 -wi 2 -w 3s -i 3 -r 5s \
+#     -p targetInterArrivalNs=0 -p queryDelayMs=0
+#
+# Reactive throughput sweep (event loops x delay):
+#   java -jar $JAR ReactivePoolStealBenchmark.throughput \
+#     -t 4 -f 1 -wi 2 -w 3s -i 3 -r 5s \
+#     -p targetInterArrivalNs=0 -p eventLoopCount=2,4,8 -p queryDelayMs=0,5
+#
+# Reactive latency with HDR histogram (rate-limited to 75% of peak):
+#   java -jar $JAR ReactivePoolStealBenchmark.latency \
+#     -t 2 -f 1 -wi 3 -w 5s -i 1 -r 30s \
+#     -p targetInterArrivalNs=205128 -p queryDelayMs=0 -p eventLoopCount=2
+#
+# Longer, more reliable runs (2 forks, 5 measurement iterations):
+#   java -jar $JAR BlockingPoolStealBenchmark.throughput \
+#     -t 2 -f 2 -wi 3 -w 5s -i 5 -r 10s \
+#     -p targetInterArrivalNs=0 -p queryDelayMs=0 -prof gc
+#
+# Key parameters:
+#   -t <threads>                    Number of JMH threads
+#   -f <forks>                      Number of JVM forks (more = more reliable)
+#   -wi/-w                          Warmup iterations/time
+#   -i/-r                           Measurement iterations/time
+#   -p eventLoopCount=<n>           Vert.x event loop count (reactive only)
+#   -p queryDelayMs=<n>             pg_sleep delay in ms (0 = no delay)
+#   -p targetInterArrivalNs=<n>     Rate limiter for latency phase (0 = no limit)
+#   -prof gc                        GC profiling
+#   -prof async:event=cpu;...       async-profiler (see below)
+
 function usage() {
   echo "Usage:"
   echo
   echo "  $0 <orm_version> [target_interval_ns]"
   echo
-  echo "    <orm_version>           The ORM version profile (e.g. perf, 6.6, 7.3)"
+  echo "    <orm_version>           The ORM version profile:"
+  echo "                              quarkus  ORM 7.4 + HR 3.4 + Vert.x 4.5 (matches Quarkus)"
+  echo "                              perf     ORM 7.4 + HR 4.4 + Vert.x 5.0 (latest HR stable)"
+  echo "                              7.3      ORM 7.3 + HR 4.3 + Vert.x 5.0"
+  echo "                              6.6      ORM 6.6 + HR 2.4 + Vert.x 4.5"
   echo "    [target_interval_ns]    Optional: per-thread inter-arrival time in ns for latency phase"
   echo "                            If omitted, only throughput benchmarks run"
   echo
   echo "  Examples:"
-  echo "    $0 perf                 # Run throughput benchmarks only"
-  echo "    $0 perf 53333           # Run both throughput and latency benchmarks"
+  echo "    $0 quarkus              # Run throughput benchmarks only (Quarkus versions)"
+  echo "    $0 perf                 # Run throughput benchmarks only (latest HR)"
+  echo "    $0 quarkus 203417       # Run both throughput and latency benchmarks"
 }
 
 ORM_VERSION=$1
@@ -52,7 +102,7 @@ echo "  Phase 1: Throughput (Blocking ORM)"
 echo "=========================================="
 java -jar $JAR BlockingPoolStealBenchmark.throughput \
  -t 2 -f 1 -wi 2 -w 3s -i 3 -r 5s \
- -p targetInterArrivalNs=0 \
+ -p targetInterArrivalNs=0 -p queryDelayMs=0 \
  -prof gc \
  ${AP_PROF_ARGS}
 
@@ -62,7 +112,7 @@ echo "  Phase 1: Throughput (Reactive)"
 echo "=========================================="
 java -jar $JAR ReactivePoolStealBenchmark.throughput \
  -t 2 -f 1 -wi 2 -w 3s -i 3 -r 5s \
- -p targetInterArrivalNs=0 \
+ -p targetInterArrivalNs=0 -p queryDelayMs=0 -p eventLoopCount=2 \
  -prof gc \
  ${AP_PROF_ARGS}
 
@@ -74,7 +124,7 @@ if [ -n "$TARGET_INTERVAL_NS" ]; then
 	echo "=========================================="
 	java -jar $JAR BlockingPoolStealBenchmark.latency \
 	 -t 2 -f 2 -wi 3 -w 5s -i 5 -r 30s \
-	 -p targetInterArrivalNs=${TARGET_INTERVAL_NS} \
+	 -p targetInterArrivalNs=${TARGET_INTERVAL_NS} -p queryDelayMs=0 \
 	 -prof gc
 
 	echo ""
@@ -84,7 +134,7 @@ if [ -n "$TARGET_INTERVAL_NS" ]; then
 	echo "=========================================="
 	java -jar $JAR ReactivePoolStealBenchmark.latency \
 	 -t 2 -f 2 -wi 3 -w 5s -i 5 -r 30s \
-	 -p targetInterArrivalNs=${TARGET_INTERVAL_NS} \
+	 -p targetInterArrivalNs=${TARGET_INTERVAL_NS} -p queryDelayMs=0 -p eventLoopCount=2 \
 	 -prof gc
 fi
 

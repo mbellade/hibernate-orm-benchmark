@@ -1,18 +1,12 @@
-package org.hibernate.benchmark.reactive;
+package org.hibernate.benchmark.reactive.stealing;
 
-import java.time.Duration;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
+import org.hibernate.SessionFactory;
 import org.hibernate.cfg.AvailableSettings;
 import org.hibernate.cfg.Configuration;
-import org.hibernate.reactive.mutiny.Mutiny;
-import org.hibernate.reactive.provider.ReactiveServiceRegistryBuilder;
-import org.hibernate.reactive.vertx.VertxInstance;
-
-import io.smallrye.mutiny.Uni;
-import io.vertx.core.Vertx;
-import io.vertx.core.VertxOptions;
 
 import org.HdrHistogram.Histogram;
 import org.openjdk.jmh.annotations.AuxCounters;
@@ -32,27 +26,23 @@ import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityManagerFactory;
+
 @State(Scope.Benchmark)
 @Fork(2)
 @Threads(2)
 @Warmup(iterations = 3, time = 5)
 @Measurement(iterations = 5, time = 10)
-public class ReactivePoolStealBenchmark {
-
-	@Param({"2", "4", "8"})
-	int eventLoopCount;
+public class BlockingPoolStealBenchmark {
 
 	@Param({"0", "1", "5"})
 	int queryDelayMs;
 
-	private Mutiny.SessionFactory sessionFactory;
-	private Vertx vertx;
+	private EntityManagerFactory emf;
 
 	@Setup(Level.Trial)
 	public void setup() {
-		var vertxOptions = new VertxOptions().setEventLoopPoolSize( eventLoopCount );
-		vertx = Vertx.vertx( vertxOptions );
-
 		var config = new Configuration();
 		config.addAnnotatedClass( Fortune.class );
 		config.setProperty( AvailableSettings.JAKARTA_JDBC_URL,
@@ -64,43 +54,34 @@ public class ReactivePoolStealBenchmark {
 		config.setProperty( AvailableSettings.HBM2DDL_AUTO, "create" );
 		config.setProperty( AvailableSettings.STATEMENT_BATCH_SIZE, "0" );
 		config.setProperty( "hibernate.generate_statistics", "false" );
-		config.setProperty( AvailableSettings.POOL_SIZE, "2" );
+		config.setProperty( "hibernate.agroal.maxSize", "2" );
+		config.setProperty( "hibernate.agroal.minSize", "2" );
+		config.setProperty( "hibernate.agroal.acquisitionTimeout_s", "30" );
 
-		var srb = new ReactiveServiceRegistryBuilder()
-				.addService( VertxInstance.class, (VertxInstance) () -> vertx )
-				.applySettings( config.getProperties() );
-
-		sessionFactory = config.buildSessionFactory( srb.build() )
-				.unwrap( Mutiny.SessionFactory.class );
+		emf = config.buildSessionFactory();
 
 		populateData();
 	}
 
 	private void populateData() {
-		// Populate in batches to avoid overwhelming the reactive pipeline
-		final int batchSize = 500;
-		for ( int batch = 0; batch < 10_000 / batchSize; batch++ ) {
-			final int start = batch * batchSize;
-			sessionFactory.withTransaction( (session, tx) -> {
-				Uni<Void> chain = Uni.createFrom().voidItem();
-				for ( int i = start; i < start + batchSize; i++ ) {
-					final int idx = i;
-					chain = chain.chain( () ->
-							session.persist( new Fortune( idx, "fortune-message-" + idx ) ) );
-				}
-				return chain.chain( session::flush );
-			} ).await().atMost( Duration.ofMinutes( 2 ) );
+		var em = emf.createEntityManager();
+		em.getTransaction().begin();
+		em.createQuery( "delete Fortune" ).executeUpdate();
+		for ( int i = 0; i < 10_000; i++ ) {
+			em.persist( new Fortune( i, "fortune-message-" + i ) );
+			if ( i % 1000 == 0 ) {
+				em.flush();
+				em.clear();
+			}
 		}
+		em.getTransaction().commit();
+		em.close();
 	}
 
 	@TearDown(Level.Trial)
 	public void teardown() {
-		if ( sessionFactory != null ) {
-			sessionFactory.close();
-		}
-		if ( vertx != null ) {
-			vertx.close().toCompletionStage().toCompletableFuture().join();
-		}
+		emf.unwrap( SessionFactory.class ).getSchemaManager().dropMappedObjects( false );
+		emf.close();
 	}
 
 	@State(Scope.Thread)
@@ -109,20 +90,24 @@ public class ReactivePoolStealBenchmark {
 		public long queries;
 	}
 
-	// -- Phase 2: latency with HDR Histogram and rate control --
-
 	@State(Scope.Thread)
 	public static class LatencyState {
+		private static final long SLOW_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos( 1 );
+
 		@Param({"0"})
 		long targetInterArrivalNs;
 
 		Histogram histogram;
 		long nextExpectedStartNs;
+		long iterationStartNs;
+		CopyOnWriteArrayList<long[]> slowOps;
 
 		@Setup(Level.Iteration)
 		public void setup() {
 			histogram = new Histogram( TimeUnit.SECONDS.toNanos( 30 ), 3 );
 			nextExpectedStartNs = 0;
+			iterationStartNs = System.nanoTime();
+			slowOps = new CopyOnWriteArrayList<>();
 		}
 
 		public long awaitExpectedStart() {
@@ -141,11 +126,21 @@ public class ReactivePoolStealBenchmark {
 			return expected;
 		}
 
+		public void recordLatency(long expectedStartNs) {
+			long endNs = System.nanoTime();
+			long elapsed = endNs - expectedStartNs;
+			histogram.recordValue( Math.max( elapsed, 0 ) );
+			if ( elapsed > SLOW_THRESHOLD_NS ) {
+				long offsetNs = endNs - iterationStartNs;
+				slowOps.add( new long[]{ offsetNs, elapsed } );
+			}
+		}
+
 		@TearDown(Level.Iteration)
 		public void report() {
 			if ( histogram.getTotalCount() > 0 ) {
 				System.out.println();
-				System.out.println( "=== Reactive - HDR Histogram (microseconds) ===" );
+				System.out.println( "=== Blocking ORM - HDR Histogram (microseconds) ===" );
 				System.out.printf( "  Count:  %d%n", histogram.getTotalCount() );
 				System.out.printf( "  Mean:   %.1f%n", histogram.getMean() / 1000.0 );
 				System.out.printf( "  P50:    %.1f%n", histogram.getValueAtPercentile( 50.0 ) / 1000.0 );
@@ -153,6 +148,13 @@ public class ReactivePoolStealBenchmark {
 				System.out.printf( "  P99:    %.1f%n", histogram.getValueAtPercentile( 99.0 ) / 1000.0 );
 				System.out.printf( "  P99.9:  %.1f%n", histogram.getValueAtPercentile( 99.9 ) / 1000.0 );
 				System.out.printf( "  Max:    %.1f%n", histogram.getMaxValue() / 1000.0 );
+				if ( !slowOps.isEmpty() ) {
+					System.out.printf( "  Slow (>1ms): %d ops%n", slowOps.size() );
+					System.out.println( "  Slow ops (offset_ms, latency_ms):" );
+					for ( var op : slowOps ) {
+						System.out.printf( "    t=%.1f  lat=%.1f%n", op[0] / 1_000_000.0, op[1] / 1_000_000.0 );
+					}
+				}
 				System.out.println();
 				histogram.outputPercentileDistribution( System.out, 1000.0 );
 			}
@@ -161,26 +163,29 @@ public class ReactivePoolStealBenchmark {
 
 	// -- Benchmark methods --
 
-	private Uni<Fortune> queryWithDelay(Mutiny.Session session, int id) {
-		Uni<Fortune> find = session.find( Fortune.class, id );
+	private void executeDelay(EntityManager em) {
 		if ( queryDelayMs > 0 ) {
-			return session.createNativeQuery( "SELECT pg_sleep(" + (queryDelayMs / 1000.0) + ")" )
-					.getSingleResult()
-					.chain( () -> find );
+			em.createNativeQuery( "SELECT pg_sleep(:delay)" )
+					.setParameter( "delay", queryDelayMs / 1000.0 )
+					.getSingleResult();
 		}
-		return find;
 	}
 
 	@Benchmark
 	@BenchmarkMode(Mode.Throughput)
 	@OutputTimeUnit(TimeUnit.SECONDS)
 	public void throughput(Blackhole bh, Counters counters) {
-		int id = ThreadLocalRandom.current().nextInt( 10_000 );
-		var fortune = sessionFactory.withSession( session ->
-				queryWithDelay( session, id )
-		).await().indefinitely();
-		bh.consume( fortune );
-		counters.queries++;
+		var em = emf.createEntityManager();
+		try {
+			executeDelay( em );
+			int id = ThreadLocalRandom.current().nextInt( 10_000 );
+			var fortune = em.find( Fortune.class, id );
+			bh.consume( fortune );
+			counters.queries++;
+		}
+		finally {
+			em.close();
+		}
 	}
 
 	@Benchmark
@@ -189,47 +194,34 @@ public class ReactivePoolStealBenchmark {
 	public void latency(Blackhole bh, Counters counters, LatencyState lat) {
 		long expectedStart = lat.awaitExpectedStart();
 
-		int id = ThreadLocalRandom.current().nextInt( 10_000 );
-		var fortune = sessionFactory.withSession( session ->
-				queryWithDelay( session, id )
-		).await().indefinitely();
-		bh.consume( fortune );
-		counters.queries++;
+		var em = emf.createEntityManager();
+		try {
+			executeDelay( em );
+			int id = ThreadLocalRandom.current().nextInt( 10_000 );
+			var fortune = em.find( Fortune.class, id );
+			bh.consume( fortune );
+			counters.queries++;
+		}
+		finally {
+			em.close();
+		}
 
-		long elapsed = System.nanoTime() - expectedStart;
-		lat.histogram.recordValue( Math.max( elapsed, 0 ) );
+		lat.recordLatency( expectedStart );
 	}
 
-	public static void main(String[] args) throws Exception {
-		var bench = new ReactivePoolStealBenchmark();
-		bench.eventLoopCount = 4;
+	public static void main(String[] args) {
+		var bench = new BlockingPoolStealBenchmark();
+		bench.queryDelayMs = 0;
 		bench.setup();
-
-		// Diagnostic: check which event loop threads handle the work
-		// Launch 2 threads to simulate the JMH @Threads(2) setup
-		var threadNames = new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>();
-		var latch = new java.util.concurrent.CountDownLatch( 4 );
-		for ( int t = 0; t < 4; t++ ) {
-			final int threadIdx = t;
-			new Thread( () -> {
-				for ( int i = 0; i < 50; i++ ) {
-					int id = ThreadLocalRandom.current().nextInt( 10_000 );
-					bench.sessionFactory.withSession( session -> {
-						String elThread = Thread.currentThread().getName();
-						threadNames.computeIfAbsent( elThread, k -> new java.util.concurrent.atomic.AtomicInteger() )
-								.incrementAndGet();
-						return session.find( Fortune.class, id );
-					} ).await().indefinitely();
-				}
-				latch.countDown();
-			}, "jmh-worker-" + threadIdx ).start();
+		var counters = new Counters();
+		try {
+			for ( int i = 0; i < 10; i++ ) {
+				bench.throughput( null, counters );
+			}
+			System.out.println( "Queries executed: " + counters.queries );
 		}
-		latch.await();
-
-		System.out.println( "=== Event loop thread distribution ===" );
-		threadNames.forEach( (name, count) ->
-				System.out.printf( "  %s: %d calls%n", name, count.get() ) );
-
-		bench.teardown();
+		finally {
+			bench.teardown();
+		}
 	}
 }

@@ -26,8 +26,14 @@ dependencies {
         testImplementation 'org.hibernate.reactive:hibernate-reactive-core:4.3.6.Final'
         testImplementation 'io.vertx:vertx-pg-client:5.0.12'
     }
+    else if ( "quarkus" == orm ) {
+        // ORM 7.4 + HR 3.4 + Vert.x 4.5 (matches what Quarkus actually uses)
+        testImplementation 'org.hibernate.orm:hibernate-core:7.4.0.Final'
+        testImplementation 'org.hibernate.reactive:hibernate-reactive-core:3.4.0.Final'
+        testImplementation 'io.vertx:vertx-pg-client:4.5.27'
+    }
     else if ( "perf" == orm || orm == null ) {
-        // Default: latest stable ORM 7.4 + HR 4.4
+        // Default: latest stable ORM 7.4 + HR 4.4 + Vert.x 5
         testImplementation 'org.hibernate.orm:hibernate-core:7.4.0.Final'
         testImplementation 'org.hibernate.reactive:hibernate-reactive-core:4.4.0.Final'
         testImplementation 'io.vertx:vertx-pg-client:5.0.12'
@@ -40,7 +46,15 @@ dependencies {
     }
 
     // Agroal connection pool (what Quarkus uses for blocking ORM)
-    testImplementation 'org.hibernate.orm:hibernate-agroal:7.4.0.Final'
+    if ( "6.6" == orm ) {
+        testImplementation 'org.hibernate.orm:hibernate-agroal:6.6.13.Final'
+    }
+    else if ( "7.3" == orm ) {
+        testImplementation 'org.hibernate.orm:hibernate-agroal:7.3.6.Final'
+    }
+    else {
+        testImplementation 'org.hibernate.orm:hibernate-agroal:7.4.0.Final'
+    }
     testImplementation 'io.agroal:agroal-pool:2.5.1'
 
     // JDBC PostgreSQL driver (for blocking ORM side)
