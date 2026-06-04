@@ -1,0 +1,59 @@
+plugins {
+    id 'org.hibernate.orm.java-conventions'
+    id "me.champeau.jmh" version "0.7.2"
+}
+
+repositories {
+    mavenLocal()
+
+    maven {
+        url = uri('https://oss.sonatype.org/content/repositories/snapshots/')
+    }
+}
+
+dependencies {
+    testImplementation 'org.openjdk.jmh:jmh-core:1.36'
+    testImplementation 'org.openjdk.jmh:jmh-generator-annprocess:1.36'
+
+    def orm = project.findProperty("orm")
+    if ( "6.6" == orm ) {
+        testImplementation 'org.hibernate.orm:hibernate-core:6.6.13.Final'
+        testImplementation 'org.hibernate.reactive:hibernate-reactive-core:2.4.19.Final'
+        testImplementation 'io.vertx:vertx-pg-client:4.5.27'
+    }
+    else if ( "7.3" == orm ) {
+        testImplementation 'org.hibernate.orm:hibernate-core:7.3.6.Final'
+        testImplementation 'org.hibernate.reactive:hibernate-reactive-core:4.3.6.Final'
+        testImplementation 'io.vertx:vertx-pg-client:5.0.12'
+    }
+    else if ( "perf" == orm || orm == null ) {
+        // Default: latest stable ORM 7.4 + HR 4.4
+        testImplementation 'org.hibernate.orm:hibernate-core:7.4.0.Final'
+        testImplementation 'org.hibernate.reactive:hibernate-reactive-core:4.4.0.Final'
+        testImplementation 'io.vertx:vertx-pg-client:5.0.12'
+    }
+    else {
+        // Fallback: same as default
+        testImplementation 'org.hibernate.orm:hibernate-core:7.4.0.Final'
+        testImplementation 'org.hibernate.reactive:hibernate-reactive-core:4.4.0.Final'
+        testImplementation 'io.vertx:vertx-pg-client:5.0.12'
+    }
+
+    // Agroal connection pool (what Quarkus uses for blocking ORM)
+    testImplementation 'org.hibernate.orm:hibernate-agroal:7.4.0.Final'
+    testImplementation 'io.agroal:agroal-pool:2.5.1'
+
+    // JDBC PostgreSQL driver (for blocking ORM side)
+    testRuntimeOnly 'org.postgresql:postgresql:42.7.4'
+
+    // HDR Histogram for latency measurements
+    testImplementation 'org.hdrhistogram:HdrHistogram:2.2.2'
+}
+
+description = 'hibernate-orm-benchmark-reactive'
+
+jmh {
+    warmupIterations = 2
+    iterations = 5
+    fork = 1
+}
