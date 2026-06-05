@@ -1,4 +1,4 @@
-package org.hibernate.benchmark.reactive.stealing;
+package org.hibernate.reactive.benchmark.stealing;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;

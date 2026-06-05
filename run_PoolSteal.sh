@@ -7,7 +7,7 @@
 # invoke java -jar directly.
 #
 # Build the JMH jar:
-#   ./gradlew :hibernate-orm-benchmark-reactive:jmhJar -Porm=perf
+#   ./gradlew :hibernate-orm-benchmark-reactive:jmhJar
 #
 # JMH jar location:
 #   reactive/target/libs/hibernate-orm-benchmark-reactive-1.0-SNAPSHOT-jmh.jar
@@ -48,30 +48,22 @@
 function usage() {
   echo "Usage:"
   echo
-  echo "  $0 <orm_version> [target_interval_ns]"
+  echo "  $0 [version] [target_interval_ns]"
   echo
-  echo "    <orm_version>           The ORM version profile:"
-  echo "                              quarkus  ORM 7.4 + HR 3.4 + Vert.x 4.5 (matches Quarkus)"
-  echo "                              perf     ORM 7.4 + HR 4.4 + Vert.x 5.0 (latest HR stable)"
-  echo "                              7.3      ORM 7.3 + HR 4.3 + Vert.x 5.0"
-  echo "                              6.6      ORM 6.6 + HR 2.4 + Vert.x 4.5"
+  echo "    [version]               The version profile:"
+  echo "                              (default) ORM 7.4 + HR 3.4 + Vert.x 4.5"
+  echo "                              vertx5    ORM 7.4 + HR 4.4 + Vert.x 5.0"
+  echo "                              6.6       ORM 6.6 + HR 2.4 + Vert.x 4.5"
   echo "    [target_interval_ns]    Optional: per-thread inter-arrival time in ns for latency phase"
   echo "                            If omitted, only throughput benchmarks run"
   echo
   echo "  Examples:"
-  echo "    $0 quarkus              # Run throughput benchmarks only (Quarkus versions)"
-  echo "    $0 perf                 # Run throughput benchmarks only (latest HR)"
-  echo "    $0 quarkus 203417       # Run both throughput and latency benchmarks"
+  echo "    $0                      # Run throughput benchmarks (default versions)"
+  echo "    $0 vertx5               # Run throughput benchmarks (Vert.x 5)"
+  echo "    $0 default 203417       # Run throughput + latency benchmarks"
 }
 
-ORM_VERSION=$1
-
-if [ -z "$ORM_VERSION" ]; then
-	echo "ERROR: ORM version not supplied"
-	usage
-	exit 1
-fi
-
+VERSION=${1:-default}
 TARGET_INTERVAL_NS=$2
 
 # Detect async-profiler library
@@ -92,7 +84,7 @@ else
 	echo "WARNING: ASYNC_PROFILER_HOME not set, running without async-profiler"
 fi
 
-./gradlew :hibernate-orm-benchmark-reactive:jmhJar -Porm=${ORM_VERSION}
+./gradlew :hibernate-orm-benchmark-reactive:jmhJar -Pversion=${VERSION}
 
 JAR=reactive/target/libs/hibernate-orm-benchmark-reactive-1.0-SNAPSHOT-jmh.jar
 
@@ -150,7 +142,7 @@ if [ -n "$AP_PROF_ARGS" ]; then
 			echo "JFR files for ${benchmark}:"
 			for jfr_file in $jfr_files; do
 				echo "  $jfr_file"
-				java -cp ${ASYNC_PROFILER_HOME}/lib/converter.jar jfr2flame $jfr_file ${jfr_file%.jfr}-cpu-${ORM_VERSION}.html 2>/dev/null
+				java -cp ${ASYNC_PROFILER_HOME}/lib/converter.jar jfr2flame $jfr_file ${jfr_file%.jfr}-cpu-${VERSION}.html 2>/dev/null
 			done
 		fi
 	done
