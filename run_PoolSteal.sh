@@ -45,23 +45,25 @@
 #   -prof gc                        GC profiling
 #   -prof async:event=cpu;...       async-profiler (see below)
 
-function usage() {
-  echo "Usage:"
+usage() {
+  echo "Usage: $0 [version] [target_interval_ns]"
   echo
-  echo "  $0 [version] [target_interval_ns]"
-  echo
-  echo "    [version]               The version profile:"
-  echo "                              (default) ORM 7.4 + HR 3.4 + Vert.x 4.5"
-  echo "                              vertx5    ORM 7.4 + HR 4.4 + Vert.x 5.0"
-  echo "                              6.6       ORM 6.6 + HR 2.4 + Vert.x 4.5"
-  echo "    [target_interval_ns]    Optional: per-thread inter-arrival time in ns for latency phase"
-  echo "                            If omitted, only throughput benchmarks run"
+  echo "  version               The version profile (default: ORM 7.4 + HR 3.4 + Vert.x 4.5):"
+  echo "                          vertx5    ORM 7.4 + HR 4.4 + Vert.x 5.0"
+  echo "                          6.6       ORM 6.6 + HR 2.4 + Vert.x 4.5"
+  echo "  target_interval_ns    Per-thread inter-arrival time in ns for latency phase."
+  echo "                        If omitted, only throughput benchmarks run."
   echo
   echo "  Examples:"
   echo "    $0                      # Run throughput benchmarks (default versions)"
   echo "    $0 vertx5               # Run throughput benchmarks (Vert.x 5)"
   echo "    $0 default 203417       # Run throughput + latency benchmarks"
 }
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  usage
+  exit 0
+fi
 
 VERSION=${1:-default}
 TARGET_INTERVAL_NS=$2
@@ -84,7 +86,7 @@ else
 	echo "WARNING: ASYNC_PROFILER_HOME not set, running without async-profiler"
 fi
 
-./gradlew :hibernate-orm-benchmark-reactive:jmhJar -Pversion=${VERSION}
+./gradlew :hibernate-orm-benchmark-reactive:jmhJar ${1:+-Pversion=$1}
 
 JAR=reactive/target/libs/hibernate-orm-benchmark-reactive-1.0-SNAPSHOT-jmh.jar
 
